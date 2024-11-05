@@ -1,8 +1,10 @@
 package mockserver
 
 import (
+	"fmt"
 	"net/http/httptest"
 
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/filecoin-project/go-jsonrpc"
 )
@@ -32,19 +34,23 @@ func (h *MockServerHandler) GetBestBlockHash() (*chainhash.Hash, error) {
 	}
 
 	// get chainHash of block with max height
-	maxheightHash := h.DataStore.DataContent.BlockHeaders[maxHeightIndex].BlockHash
-	return &maxheightHash, nil
+	maxheightHash := h.DataStore.DataContent.BlockHeaders[maxHeightIndex].Hash
+
+	bestBlockHash, err := chainhash.NewHashFromStr(maxheightHash)
+	if err != nil {
+		return nil, &btcjson.RPCError{
+			Code:    btcjson.ErrRPCDecodeHexString,
+			Message: "Unable to parse block hash stored",
+		}
+	}
+	return bestBlockHash, nil
 }
 
 // func (h *MockServerHandler) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) {
 // 	return in
 // }
 
-// func (h *MockServerHandler) GetBlockChainInfo() (*btcjson.GetBlockChainInfoResult, error) {
-// 	return in
-// }
-
-func (h *MockServerHandler) GetBlockCount() (int64, error) {
+func (h *MockServerHandler) GetBlockCount() (int32, error) {
 	// find the highest block height
 	maxHeight := h.DataStore.DataContent.BlockHeaders[0].Height
 	for _, blockHeader := range h.DataStore.DataContent.BlockHeaders {
@@ -54,40 +60,91 @@ func (h *MockServerHandler) GetBlockCount() (int64, error) {
 	return maxHeight, nil
 }
 
-// func (h *MockServerHandler) GetBlockFilter(
-// 	blockHash chainhash.Hash,
-// 	filterType *btcjson.FilterTypeName,
-// ) (*btcjson.GetBlockFilterResult, error) {
-// 	return in
-// }
-
-func (h *MockServerHandler) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
+func (h *MockServerHandler) GetBlockHash(blockHeight int32) (*chainhash.Hash, error) {
 	// get chainHash of block with blockHeight
-	blockHash := h.DataStore.DataContent.BlockHeaders[blockHeight].BlockHash
-	return &blockHash, nil
+	if blockHeader, ok := h.DataStore.BlockHeaderMap[blockHeight]; ok {
+		blockHash, err := chainhash.NewHashFromStr(blockHeader.Hash)
+		if err != nil {
+			return nil, &btcjson.RPCError{
+				Code:    btcjson.ErrRPCDecodeHexString,
+				Message: "Unable to parse block hash stored",
+			}
+		}
+		return blockHash, nil
+	}
+
+	return nil, &btcjson.RPCError{
+		Code:    btcjson.ErrRPCOutOfRange,
+		Message: "Block number out of range",
+	}
 }
 
-func (h *MockServerHandler) GetBlockHeader(blockHash *chainhash.Hash) (*BlockHeader, error) {
-	blockHashString := blockHash.String()
-
+func (h *MockServerHandler) GetBlockHeader(
+	blockHash *chainhash.Hash,
+	verbose bool,
+) (*btcjson.GetBlockHeaderVerboseResult, error) {
 	// find the block with hash `blockHash`
-	blockIndex := 0
-	for index, blockHeader := range h.DataStore.DataContent.BlockHeaders {
-		if blockHeader.BlockHash.String() == blockHashString {
-			blockIndex = index
+	for _, blockHeader := range h.DataStore.DataContent.BlockHeaders {
+		if blockHeader.Hash == blockHash.String() {
+			return &blockHeader, nil
 		}
 	}
 
-	blockHeader := h.DataStore.DataContent.BlockHeaders[blockIndex]
-	return &blockHeader, nil
+	return nil, &btcjson.RPCError{
+		Code:    btcjson.ErrRPCBlockNotFound,
+		Message: "Block not found",
+	}
 }
 
-// func (h *MockServerHandler) GetBlockStats(
-// 	hashOrHeight interface{},
-// 	stats *[]string,
-// ) (*btcjson.GetBlockStatsResult, error) {
-// 	return in
-// }
+func (h *MockServerHandler) GetTxOut(
+	txHash *chainhash.Hash,
+	index uint32,
+	mempool bool,
+) (*btcjson.GetTxOutResult, error) {
+	voutIndex := index
+
+	// find the transaction with hash `txHash`
+	if transaction, ok := h.DataStore.TransactionMap[txHash.String()]; ok {
+		if voutIndex >= uint32(len(transaction.Vout)) {
+			return nil, &btcjson.RPCError{
+				Code: btcjson.ErrRPCInvalidTxVout,
+				Message: "Output index number (vout) does not " +
+					"exist for transaction.",
+			}
+		}
+
+		txOut := &btcjson.GetTxOutResult{
+			BestBlock:     "", // latest block not in data/ file
+			Confirmations: int64(transaction.Confirmations),
+			Value:         transaction.Vout[voutIndex].Value,
+			ScriptPubKey:  transaction.Vout[voutIndex].ScriptPubKey,
+			Coinbase:      true, // not available in v1 "vout"
+		}
+		return txOut, nil
+	}
+
+	// if no txn found, return error
+	return nil, btcjson.NewRPCError(
+		btcjson.ErrRPCNoTxInfo,
+		fmt.Sprintf("No information available about transaction %v", txHash),
+	)
+}
+
+func (h *MockServerHandler) GetRawTransaction(
+	txHash *chainhash.Hash,
+	verbose bool,
+	blockHash *chainhash.Hash,
+) (*btcjson.TxRawResult, error) {
+	// find the transaction with hash `txHash`
+	if transaction, ok := h.DataStore.TransactionMap[txHash.String()]; ok {
+		return &transaction, nil
+	}
+
+	return nil, &btcjson.RPCError{
+		Code:    btcjson.ErrRPCRawTxString,
+		Message: "Transaction not found",
+	}
+}
 
 // NewMockRPCServer creates a new instance of the rpcServer and starts listening
 func NewMockRPCServer() *httptest.Server {
