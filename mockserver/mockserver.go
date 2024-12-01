@@ -163,3 +163,17 @@ func NewMockRPCServer() *httptest.Server {
 
 	return testServ
 }
+
+// Add this new function
+func NewMockRPCServerWithPath(dataPath string) *httptest.Server {
+	rpcServer := jsonrpc.NewServer()
+	
+	serverHandler := &MockServerHandler{}
+	rpcServer.Register("MockServerHandler", serverHandler)
+	
+	// Initialize with provided data path
+	serverHandler.DataStore.ReadJson(dataPath)
+	
+	testServ := httptest.NewServer(rpcServer)
+	return testServ
+}
